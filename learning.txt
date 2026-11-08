@@ -1,0 +1,14 @@
+11/7/2026
+what i did -
+implemented my own order book (very basic implementation) using a flat array indexed by price tick, an intrusive doubly linked list (FIFO queue) per price level, and a preallocated node pool with a free list
+benchmarked against a few implementations
+map+list 68 ns vs my book 4 ns per insert (16×)
+my implementation faster, but assumes a dense bounded price range
+
+larger takeaways -
+what goes into determining deisgn -> efficiency of adding, filling, and cancelling orders
+this is determined by what data structures you use
+best implementation will change based on what financial asset because price range/memory will differ
+-> aka crypto has a lot larger, sparse price range vs typical stocks are bounded and more dense
+oh yeah you can consider caching as well for how long it'll take, not just big O
+

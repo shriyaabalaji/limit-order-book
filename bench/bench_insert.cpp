@@ -2,7 +2,8 @@
 //   A) std::map<price, std::list<Order>>
 //   B) OrderBook (flat price array + intrusive lists + node pool)
 //   S) WK Selph (2011) design: tree of limits + price hash + heap orders + id hash
-//   C) B plus an unordered_map<id, handle>, so it pays for id lookup like S does
+//   B now includes its own flat-array id lookup.
+//   C) B plus an extra unordered_map<id, handle>, to show what a hash map adds
 //
 // Hash maps are reserve()d up front (outside timing) for S and C.
 // Usage: bench_insert [num_orders=1000000] [num_levels=1000] [runs=5]
@@ -104,7 +105,7 @@ int main(int argc, char** argv) {
                 sizeof(Node), sizeof(Level), sizeof(std::list<Order>));
 
     double best[4] = {1e30, 1e30, 1e30, 1e30};
-    const char* names[4] = {"A map+list   ", "S selph      ", "C flat+idmap ", "B flat       "};
+    const char* names[4] = {"A map+list   ", "S selph      ", "C B+hashmap  ", "B flat+idarr "};
     for (int r = 0; r < runs; ++r) {
         double t[4] = {bench_map(prices), bench_selph(prices, num_levels),
                        bench_flat_idmap(prices, num_levels), bench_flat(prices, num_levels)};

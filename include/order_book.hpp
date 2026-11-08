@@ -2,8 +2,11 @@
 // Base limit order book: flat price array + intrusive doubly linked lists
 // + preallocated node pool with an intrusive free list.
 //
-// Not done yet (yours to design):
-//   - order_id -> handle lookup (cancel currently takes the handle from add())
+// Order id lookup: a flat array indexed directly by order_id (ids must be
+// in [0, max_order_id)). Assumes ids are dense, like exchange-assigned
+// sequential order reference numbers.
+//
+// Not done yet:
 //   - matching
 //   - tracking best bid / best ask
 //   - what to do on out-of-range prices / pool exhaustion (currently: return NIL)
@@ -79,20 +82,26 @@ struct Level {
 // ---------------------------------------------------------------------------
 class OrderBook {
 public:
-    OrderBook(int64_t min_price_ticks, uint32_t num_levels, Idx max_orders)
+    // max_order_id: ids must be < this. Defaults to max_orders.
+    OrderBook(int64_t min_price_ticks, uint32_t num_levels, Idx max_orders,
+              uint64_t max_order_id = 0)
         : min_price_(min_price_ticks),
           num_levels_(num_levels),
           bids_(num_levels),
           asks_(num_levels),
-          pool_(max_orders) {}
+          pool_(max_orders),
+          id_to_node_(max_order_id ? max_order_id : max_orders, NIL) {}
 
-    // Returns a handle (pool index) for later cancel, or NIL if rejected.
+    // Returns a handle (pool index), or NIL if rejected
+    // (price out of range, id out of range, duplicate id, or pool full).
     Idx add(uint64_t order_id, Side side, int64_t price_ticks, uint32_t qty) {
         int64_t offset = price_ticks - min_price_;
         if (offset < 0 || offset >= static_cast<int64_t>(num_levels_)) return NIL;
+        if (order_id >= id_to_node_.size() || id_to_node_[order_id] != NIL) return NIL;
 
         Idx n = pool_.alloc();
         if (n == NIL) return NIL;
+        id_to_node_[order_id] = n;
 
         auto pi = static_cast<uint32_t>(offset);
         pool_[n] = Node{order_id, qty, pi, NIL, NIL, side};
@@ -104,14 +113,21 @@ public:
         return n;
     }
 
-    // `handle` must be a live order returned by add().
-    void cancel(Idx handle) {
+    // Cancel by order id. Returns false if the id isn't a live order
+    // (unknown, already cancelled, or out of range) - so double cancels are safe.
+    bool cancel(uint64_t order_id) {
+        if (order_id >= id_to_node_.size()) return false;
+        Idx handle = id_to_node_[order_id];
+        if (handle == NIL) return false;
+
         Node& o = pool_[handle];
         Level& lvl = ladder(o.side)[o.price_idx];
         unlink(lvl, handle);
         lvl.total_qty -= o.qty;
         lvl.count -= 1;
         pool_.free(handle);
+        id_to_node_[order_id] = NIL;
+        return true;
     }
 
     const Level& level(Side side, int64_t price_ticks) const {
@@ -147,4 +163,5 @@ private:
     std::vector<Level> bids_;
     std::vector<Level> asks_;
     NodePool           pool_;
+    std::vector<Idx>   id_to_node_; // order_id -> pool index, NIL if not live
 };

@@ -14,10 +14,22 @@
 // for the next non-empty one (O(levels) worst case - a bitmap could make
 // this ~O(1) later if it shows up in measurements).
 //
+// Trade reporting: a callback invoked once per fill (template parameter,
+// so it's inlined - no allocation, no function-pointer call).
+//
+// Self-trade prevention (STP): each order may carry an owner id. If an
+// incoming order would match a resting order with the same owner, matching
+// stops and the incoming order's remainder is cancelled ("cancel newest").
+// Fills that already happened against other owners stand.
+//
+// Pool full: if there's no node to rest the remainder, it's cancelled and
+// reported in AddResult (never silently dropped). Size the pool for peak load.
+//
 // Not done yet:
-//   - market / IOC orders, self-trade prevention, order modify
+//   - market / IOC orders, order modify
 
 #include <algorithm>
+#include <concepts>
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -26,6 +38,9 @@ using Idx = uint32_t;                 // index into the node pool
 inline constexpr Idx NIL = UINT32_MAX; // "no node"
 
 enum class Side : uint8_t { Buy, Sell };
+
+using Owner = uint32_t;                 // trader / account id, for self-trade prevention
+inline constexpr Owner kNoOwner = 0;    // STP disabled for this order
 
 // One resting order. Lives in the pool. `prev`/`next` link it into its
 // price level's FIFO queue while in use, and `next` links it into the
@@ -36,8 +51,10 @@ struct Node {
     uint32_t price_idx; // index into the ladder, so cancel can find its level
     Idx      prev;
     Idx      next;
+    Owner    owner;
     Side     side;
 };
+static_assert(sizeof(Node) == 32, "Node should stay 2 per cache line");
 
 // ---------------------------------------------------------------------------
 // Node pool: all nodes allocated once up front. alloc/free are O(1) stack
@@ -93,10 +110,18 @@ struct Trade {
     Side     taker_side;
 };
 
+enum class CancelReason : uint8_t {
+    None,      // nothing was cancelled
+    SelfTrade, // would have matched an order from the same owner
+    PoolFull,  // no free node to rest the remainder
+};
+
 struct AddResult {
-    bool     accepted = false; // false: bad price/id, nothing happened
-    uint32_t filled   = 0;     // shares that traded immediately
-    Idx      handle   = NIL;   // node of the resting remainder, NIL if none rested
+    bool         accepted  = false; // false: bad price/id, nothing happened
+    uint32_t     filled    = 0;     // shares that traded immediately
+    uint32_t     cancelled = 0;     // shares neither filled nor rested (see reason)
+    CancelReason reason    = CancelReason::None;
+    Idx          handle    = NIL;   // node of the resting remainder, NIL if none rested
 };
 
 // ---------------------------------------------------------------------------
@@ -122,11 +147,11 @@ public:
     // parameter, so the compiler inlines it (no function-pointer call).
     // The callback must not modify the book.
     //
-    // If the pool is full, the unfilled remainder is dropped
-    // (result.filled < qty and result.handle == NIL).
+    // Invariant: filled + cancelled + (resting qty) == qty.
     template <class OnTrade>
+        requires std::invocable<OnTrade&, const Trade&>
     AddResult add(uint64_t order_id, Side side, int64_t price_ticks, uint32_t qty,
-                  OnTrade&& on_trade) {
+                  Owner owner, OnTrade&& on_trade) {
         AddResult res;
         int64_t offset = price_ticks - min_price_;
         if (offset < 0 || offset >= static_cast<int64_t>(num_levels_)) return res;
@@ -136,29 +161,40 @@ public:
 
         auto pi = static_cast<uint32_t>(offset);
         uint32_t remaining = qty;
+        bool self_trade = false;
 
         // 1. Match against the opposite side while prices cross.
         if (side == Side::Buy) {
-            while (remaining > 0 && best_ask_ <= static_cast<int64_t>(pi)) {
+            while (remaining > 0 && !self_trade && best_ask_ <= static_cast<int64_t>(pi)) {
                 remaining = match_level(asks_, static_cast<uint32_t>(best_ask_),
-                                        order_id, side, remaining, on_trade);
+                                        order_id, side, owner, remaining, self_trade, on_trade);
                 if (asks_[best_ask_].count == 0) best_ask_ = next_ask_from(best_ask_ + 1);
             }
         } else {
-            while (remaining > 0 && best_bid_ >= static_cast<int64_t>(pi)) {
+            while (remaining > 0 && !self_trade && best_bid_ >= static_cast<int64_t>(pi)) {
                 remaining = match_level(bids_, static_cast<uint32_t>(best_bid_),
-                                        order_id, side, remaining, on_trade);
+                                        order_id, side, owner, remaining, self_trade, on_trade);
                 if (bids_[best_bid_].count == 0) best_bid_ = next_bid_from(best_bid_ - 1);
             }
         }
         res.filled = qty - remaining;
         if (remaining == 0) return res;
 
+        if (self_trade) { // cancel newest: the incoming remainder never rests
+            res.cancelled = remaining;
+            res.reason = CancelReason::SelfTrade;
+            return res;
+        }
+
         // 2. Rest the remainder.
         Idx n = pool_.alloc();
-        if (n == NIL) return res;
+        if (n == NIL) {
+            res.cancelled = remaining;
+            res.reason = CancelReason::PoolFull;
+            return res;
+        }
         id_to_node_[order_id] = n;
-        pool_[n] = Node{order_id, remaining, pi, NIL, NIL, side};
+        pool_[n] = Node{order_id, remaining, pi, NIL, NIL, owner, side};
 
         Level& lvl = ladder(side)[pi];
         link_tail(lvl, n);
@@ -172,9 +208,18 @@ public:
         return res;
     }
 
-    // Same, without a trade callback.
-    AddResult add(uint64_t order_id, Side side, int64_t price_ticks, uint32_t qty) {
-        return add(order_id, side, price_ticks, qty, [](const Trade&) {});
+    // No owner (STP off), with a trade callback.
+    template <class OnTrade>
+        requires std::invocable<OnTrade&, const Trade&>
+    AddResult add(uint64_t order_id, Side side, int64_t price_ticks, uint32_t qty,
+                  OnTrade&& on_trade) {
+        return add(order_id, side, price_ticks, qty, kNoOwner, on_trade);
+    }
+
+    // No trade callback.
+    AddResult add(uint64_t order_id, Side side, int64_t price_ticks, uint32_t qty,
+                  Owner owner = kNoOwner) {
+        return add(order_id, side, price_ticks, qty, owner, [](const Trade&) {});
     }
 
     // Cancel by order id. Returns false if the id isn't a live order
@@ -222,15 +267,20 @@ private:
     const std::vector<Level>& ladder(Side s) const { return s == Side::Buy ? bids_ : asks_; }
 
     // Fill against one price level, oldest order first. Returns shares left.
+    // Sets self_trade and stops if the next maker has the taker's owner.
     template <class OnTrade>
     uint32_t match_level(std::vector<Level>& side_levels, uint32_t li,
-                         uint64_t taker_id, Side taker_side, uint32_t remaining,
-                         OnTrade& on_trade) {
+                         uint64_t taker_id, Side taker_side, Owner taker_owner,
+                         uint32_t remaining, bool& self_trade, OnTrade& on_trade) {
         Level& lvl = side_levels[li];
         int64_t price = min_price_ + li;
         while (remaining > 0 && lvl.head != NIL) {
             Idx m = lvl.head;
             Node& maker = pool_[m];
+            if (taker_owner != kNoOwner && maker.owner == taker_owner) {
+                self_trade = true;
+                break;
+            }
             uint32_t fill = std::min(remaining, maker.qty);
 
             on_trade(Trade{taker_id, maker.order_id, price, fill, taker_side});

@@ -135,6 +135,70 @@ void test_filled_node_recycled() {
     assert(ob.add(5, Side::Sell, 10050, 10).handle != NIL);
 }
 
+void test_pool_full_remainder_reported() {
+    OrderBook ob(10000, 1000, 1, 1000); // pool of 1 node
+    Recorder r;
+    ob.add(1, Side::Sell, 10050, 30, r);     // uses the only node
+    ob.add(2, Side::Sell, 10060, 10, r);     // pool full, no match -> all cancelled
+    [[maybe_unused]] AddResult res = ob.add(3, Side::Buy, 10050, 100, r); // fills 30, frees node, rests 70
+    assert(res.filled == 30 && res.handle != NIL && res.cancelled == 0);
+
+    [[maybe_unused]] AddResult full = ob.add(4, Side::Sell, 10070, 10, r); // pool full again
+    assert(full.accepted && full.filled == 0 && full.handle == NIL);
+    assert(full.cancelled == 10 && full.reason == CancelReason::PoolFull);
+    assert(!ob.is_live(4));
+}
+
+void test_pool_full_after_partial_fill() {
+    OrderBook ob(10000, 1000, 2, 1000);
+    ob.add(1, Side::Sell, 10050, 30);
+    ob.add(2, Side::Buy, 10040, 10);          // pool now full (2 nodes)
+    // Buy 100: fills 30 vs order 1 (frees a node), rests 70 in that node.
+    // Then a sell that partially fills and can't rest:
+    ob.add(3, Side::Buy, 10050, 100);
+    [[maybe_unused]] AddResult res = ob.add(4, Side::Sell, 10050, 100); // fills 70 vs order 3, frees a node, rests 30
+    assert(res.filled == 70 && res.handle != NIL);
+    [[maybe_unused]] AddResult res2 = ob.add(5, Side::Buy, 10045, 5);   // no match, pool full
+    assert(res2.cancelled == 5 && res2.reason == CancelReason::PoolFull);
+    // filled + cancelled + rested always equals qty
+    assert(res.filled + res.cancelled + ob.node(res.handle).qty == 100);
+}
+
+void test_self_trade_cancels_newest() {
+    OrderBook ob = make_book();
+    Recorder r;
+    ob.add(1, Side::Sell, 10050, 10, /*owner=*/7, r);
+    ob.add(2, Side::Sell, 10050, 10, /*owner=*/9, r);
+    [[maybe_unused]] AddResult res = ob.add(3, Side::Buy, 10050, 20, /*owner=*/7, r);
+
+    // Owner 7's own resting sell is first in line -> stop immediately.
+    assert(r.trades.empty());
+    assert(res.filled == 0 && res.cancelled == 20 && res.reason == CancelReason::SelfTrade);
+    assert(res.handle == NIL && !ob.is_live(3));
+    assert(ob.is_live(1) && ob.is_live(2)); // resting orders untouched
+}
+
+void test_self_trade_after_other_fills() {
+    OrderBook ob = make_book();
+    Recorder r;
+    ob.add(1, Side::Sell, 10050, 10, /*owner=*/9, r);
+    ob.add(2, Side::Sell, 10051, 10, /*owner=*/7, r);
+    [[maybe_unused]] AddResult res = ob.add(3, Side::Buy, 10055, 30, /*owner=*/7, r);
+
+    // Trades with owner 9 stand; stops at owner 7's order; rest cancelled.
+    assert(r.trades.size() == 1 && r.trades[0].maker_id == 1);
+    assert(res.filled == 10 && res.cancelled == 20 && res.reason == CancelReason::SelfTrade);
+    assert(ob.is_live(2) && ob.best_ask() == 10051);
+}
+
+void test_no_owner_means_no_stp() {
+    OrderBook ob = make_book();
+    Recorder r;
+    ob.add(1, Side::Sell, 10050, 10, r);  // kNoOwner
+    ob.add(2, Side::Buy, 10050, 10, r);   // kNoOwner: trades normally
+    assert(r.trades.size() == 1);
+}
+
 } // namespace
 
 int main() {
@@ -147,5 +211,10 @@ int main() {
     test_sell_side_matching();
     test_cancel_updates_best();
     test_filled_node_recycled();
+    test_pool_full_remainder_reported();
+    test_pool_full_after_partial_fill();
+    test_self_trade_cancels_newest();
+    test_self_trade_after_other_fills();
+    test_no_owner_means_no_stp();
     std::puts("all matching tests passed");
 }

@@ -6,12 +6,20 @@
 // in [0, max_order_id)). Assumes ids are dense, like exchange-assigned
 // sequential order reference numbers.
 //
+// Matching: price-time priority. An incoming order trades against the best
+// opposite level(s) while prices cross, oldest resting order first, at the
+// resting order's price. Any remainder rests in the book (limit orders).
+//
+// Best bid/ask: cached level indices. When the best level empties we scan
+// for the next non-empty one (O(levels) worst case - a bitmap could make
+// this ~O(1) later if it shows up in measurements).
+//
 // Not done yet:
-//   - matching
-//   - tracking best bid / best ask
-//   - what to do on out-of-range prices / pool exhaustion (currently: return NIL)
+//   - market / IOC orders, self-trade prevention, order modify
 
+#include <algorithm>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 using Idx = uint32_t;                 // index into the node pool
@@ -76,6 +84,21 @@ struct Level {
     uint32_t count     = 0;
 };
 
+// One execution. Reported to the caller's callback during add().
+struct Trade {
+    uint64_t taker_id;    // incoming (aggressive) order
+    uint64_t maker_id;    // resting (passive) order
+    int64_t  price_ticks; // always the resting order's price
+    uint32_t qty;
+    Side     taker_side;
+};
+
+struct AddResult {
+    bool     accepted = false; // false: bad price/id, nothing happened
+    uint32_t filled   = 0;     // shares that traded immediately
+    Idx      handle   = NIL;   // node of the resting remainder, NIL if none rested
+};
+
 // ---------------------------------------------------------------------------
 // Order book. Prices are integer ticks (no floating point).
 // Slot i in each ladder represents price (min_price_ticks + i).
@@ -90,27 +113,68 @@ public:
           bids_(num_levels),
           asks_(num_levels),
           pool_(max_orders),
-          id_to_node_(max_order_id ? max_order_id : max_orders, NIL) {}
+          id_to_node_(max_order_id ? max_order_id : max_orders, NIL),
+          best_bid_(-1),
+          best_ask_(num_levels) {}
 
-    // Returns a handle (pool index), or NIL if rejected
-    // (price out of range, id out of range, duplicate id, or pool full).
-    Idx add(uint64_t order_id, Side side, int64_t price_ticks, uint32_t qty) {
+    // Submit a limit order. Matches first, then rests any remainder.
+    // `on_trade(const Trade&)` is called once per fill. It's a template
+    // parameter, so the compiler inlines it (no function-pointer call).
+    // The callback must not modify the book.
+    //
+    // If the pool is full, the unfilled remainder is dropped
+    // (result.filled < qty and result.handle == NIL).
+    template <class OnTrade>
+    AddResult add(uint64_t order_id, Side side, int64_t price_ticks, uint32_t qty,
+                  OnTrade&& on_trade) {
+        AddResult res;
         int64_t offset = price_ticks - min_price_;
-        if (offset < 0 || offset >= static_cast<int64_t>(num_levels_)) return NIL;
-        if (order_id >= id_to_node_.size() || id_to_node_[order_id] != NIL) return NIL;
-
-        Idx n = pool_.alloc();
-        if (n == NIL) return NIL;
-        id_to_node_[order_id] = n;
+        if (offset < 0 || offset >= static_cast<int64_t>(num_levels_)) return res;
+        if (order_id >= id_to_node_.size() || id_to_node_[order_id] != NIL) return res;
+        if (qty == 0) return res;
+        res.accepted = true;
 
         auto pi = static_cast<uint32_t>(offset);
-        pool_[n] = Node{order_id, qty, pi, NIL, NIL, side};
+        uint32_t remaining = qty;
+
+        // 1. Match against the opposite side while prices cross.
+        if (side == Side::Buy) {
+            while (remaining > 0 && best_ask_ <= static_cast<int64_t>(pi)) {
+                remaining = match_level(asks_, static_cast<uint32_t>(best_ask_),
+                                        order_id, side, remaining, on_trade);
+                if (asks_[best_ask_].count == 0) best_ask_ = next_ask_from(best_ask_ + 1);
+            }
+        } else {
+            while (remaining > 0 && best_bid_ >= static_cast<int64_t>(pi)) {
+                remaining = match_level(bids_, static_cast<uint32_t>(best_bid_),
+                                        order_id, side, remaining, on_trade);
+                if (bids_[best_bid_].count == 0) best_bid_ = next_bid_from(best_bid_ - 1);
+            }
+        }
+        res.filled = qty - remaining;
+        if (remaining == 0) return res;
+
+        // 2. Rest the remainder.
+        Idx n = pool_.alloc();
+        if (n == NIL) return res;
+        id_to_node_[order_id] = n;
+        pool_[n] = Node{order_id, remaining, pi, NIL, NIL, side};
 
         Level& lvl = ladder(side)[pi];
         link_tail(lvl, n);
-        lvl.total_qty += qty;
+        lvl.total_qty += remaining;
         lvl.count += 1;
-        return n;
+
+        if (side == Side::Buy) best_bid_ = std::max<int64_t>(best_bid_, pi);
+        else                   best_ask_ = std::min<int64_t>(best_ask_, pi);
+
+        res.handle = n;
+        return res;
+    }
+
+    // Same, without a trade callback.
+    AddResult add(uint64_t order_id, Side side, int64_t price_ticks, uint32_t qty) {
+        return add(order_id, side, price_ticks, qty, [](const Trade&) {});
     }
 
     // Cancel by order id. Returns false if the id isn't a live order
@@ -127,7 +191,25 @@ public:
         lvl.count -= 1;
         pool_.free(handle);
         id_to_node_[order_id] = NIL;
+
+        if (lvl.count == 0) {
+            int64_t i = o.price_idx;
+            if (o.side == Side::Buy && i == best_bid_) best_bid_ = next_bid_from(i - 1);
+            if (o.side == Side::Sell && i == best_ask_) best_ask_ = next_ask_from(i + 1);
+        }
         return true;
+    }
+
+    std::optional<int64_t> best_bid() const {
+        if (best_bid_ < 0) return std::nullopt;
+        return min_price_ + best_bid_;
+    }
+    std::optional<int64_t> best_ask() const {
+        if (best_ask_ >= static_cast<int64_t>(num_levels_)) return std::nullopt;
+        return min_price_ + best_ask_;
+    }
+    bool is_live(uint64_t order_id) const {
+        return order_id < id_to_node_.size() && id_to_node_[order_id] != NIL;
     }
 
     const Level& level(Side side, int64_t price_ticks) const {
@@ -138,6 +220,44 @@ public:
 private:
     std::vector<Level>&       ladder(Side s)       { return s == Side::Buy ? bids_ : asks_; }
     const std::vector<Level>& ladder(Side s) const { return s == Side::Buy ? bids_ : asks_; }
+
+    // Fill against one price level, oldest order first. Returns shares left.
+    template <class OnTrade>
+    uint32_t match_level(std::vector<Level>& side_levels, uint32_t li,
+                         uint64_t taker_id, Side taker_side, uint32_t remaining,
+                         OnTrade& on_trade) {
+        Level& lvl = side_levels[li];
+        int64_t price = min_price_ + li;
+        while (remaining > 0 && lvl.head != NIL) {
+            Idx m = lvl.head;
+            Node& maker = pool_[m];
+            uint32_t fill = std::min(remaining, maker.qty);
+
+            on_trade(Trade{taker_id, maker.order_id, price, fill, taker_side});
+
+            maker.qty     -= fill;
+            lvl.total_qty -= fill;
+            remaining     -= fill;
+
+            if (maker.qty == 0) { // fully filled: remove and recycle
+                unlink(lvl, m);
+                lvl.count -= 1;
+                id_to_node_[maker.order_id] = NIL;
+                pool_.free(m);
+            }
+        }
+        return remaining;
+    }
+
+    // Next non-empty level scanning down from i (bids) / up from i (asks).
+    int64_t next_bid_from(int64_t i) const {
+        while (i >= 0 && bids_[i].count == 0) --i;
+        return i; // -1 if none
+    }
+    int64_t next_ask_from(int64_t i) const {
+        while (i < static_cast<int64_t>(num_levels_) && asks_[i].count == 0) ++i;
+        return i; // num_levels_ if none
+    }
 
     // Append node n at the back of the level's queue.
     void link_tail(Level& lvl, Idx n) {
@@ -164,4 +284,6 @@ private:
     std::vector<Level> asks_;
     NodePool           pool_;
     std::vector<Idx>   id_to_node_; // order_id -> pool index, NIL if not live
+    int64_t            best_bid_;   // level index, -1 if no bids
+    int64_t            best_ask_;   // level index, num_levels_ if no asks
 };

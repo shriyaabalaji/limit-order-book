@@ -56,7 +56,7 @@ double bench_flat(const std::vector<int64_t>& prices, uint32_t num_levels) {
     uint64_t check = 0;
     auto t0 = Clock::now();
     for (size_t i = 0; i < prices.size(); ++i) {
-        check += book.add(i, Side::Buy, prices[i], 100);
+        check += book.add(i, Side::Buy, prices[i], 100).handle;
     }
     auto t1 = Clock::now();
     g_sink = check + book.level(Side::Buy, prices[0]).count;
@@ -81,7 +81,7 @@ double bench_flat_idmap(const std::vector<int64_t>& prices, uint32_t num_levels)
     ids.reserve(prices.size());
     auto t0 = Clock::now();
     for (size_t i = 0; i < prices.size(); ++i) {
-        ids.emplace(i, book.add(i, Side::Buy, prices[i], 100));
+        ids.emplace(i, book.add(i, Side::Buy, prices[i], 100).handle);
     }
     auto t1 = Clock::now();
     g_sink = ids.size() + book.level(Side::Buy, prices[0]).count;

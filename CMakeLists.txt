@@ -17,8 +17,12 @@ target_include_directories(lob INTERFACE include)
 add_executable(test_order_book tests/test_order_book.cpp)
 target_link_libraries(test_order_book PRIVATE lob)
 
+add_executable(test_matching tests/test_matching.cpp)
+target_link_libraries(test_matching PRIVATE lob)
+
 add_executable(bench_insert bench/bench_insert.cpp)
 target_link_libraries(bench_insert PRIVATE lob)
 
 enable_testing()
 add_test(NAME test_order_book COMMAND test_order_book)
+add_test(NAME test_matching COMMAND test_matching)

@@ -23,6 +23,9 @@ target_link_libraries(test_matching PRIVATE lob)
 add_executable(bench_insert bench/bench_insert.cpp)
 target_link_libraries(bench_insert PRIVATE lob)
 
+add_executable(bench_matching bench/bench_matching.cpp)
+target_link_libraries(bench_matching PRIVATE lob)
+
 enable_testing()
 add_test(NAME test_order_book COMMAND test_order_book)
 add_test(NAME test_matching COMMAND test_matching)

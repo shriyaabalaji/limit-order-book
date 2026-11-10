@@ -256,6 +256,10 @@ public:
     bool is_live(uint64_t order_id) const {
         return order_id < id_to_node_.size() && id_to_node_[order_id] != NIL;
     }
+    // Resting order's node by id, or nullptr if not live.
+    const Node* find(uint64_t order_id) const {
+        return is_live(order_id) ? &pool_[id_to_node_[order_id]] : nullptr;
+    }
 
     const Level& level(Side side, int64_t price_ticks) const {
         return ladder(side)[static_cast<uint32_t>(price_ticks - min_price_)];

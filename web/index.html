@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Order Book Playground</title>
+  <meta name="description" content="Place orders against a real C++ limit order book compiled to WebAssembly.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Order Book Playground</h1>
+      <p class="sub">A C++ limit order book compiled to WebAssembly. Place orders, watch them match.
+        <a href="https://github.com/shriyaabalaji/limit-order-book">Source</a></p>
+    </div>
+    <div class="controls">
+      <label class="toggle"><input type="checkbox" id="sim"> Simulate market</label>
+      <button id="reset" class="ghost">Reset</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel" id="entry">
+      <h2>Place order</h2>
+      <div class="sides" role="radiogroup" aria-label="Side">
+        <button type="button" class="side buy active" data-side="0" aria-pressed="true">Buy</button>
+        <button type="button" class="side sell" data-side="1" aria-pressed="false">Sell</button>
+      </div>
+      <label>Limit price ($)
+        <input id="price" type="number" step="0.01" min="90" max="110" value="100.00">
+      </label>
+      <label>Quantity
+        <input id="qty" type="number" step="1" min="1" value="100">
+      </label>
+      <button id="place" class="primary buy">Place buy</button>
+      <div class="quick">
+        <button id="hitAsk" class="ghost">Buy at best ask</button>
+        <button id="hitBid" class="ghost">Sell at best bid</button>
+      </div>
+      <p id="result" class="result" aria-live="polite"></p>
+
+      <details>
+        <summary>How matching works</summary>
+        <ul>
+          <li><b>Price priority:</b> a buy trades with the lowest ask first; a sell with the highest bid.</li>
+          <li><b>Time priority:</b> at the same price, the oldest order fills first (FIFO).</li>
+          <li><b>Trade price</b> is the resting order's price, not yours.</li>
+          <li><b>Partial fills:</b> whatever doesn't trade rests in the book at your limit.</li>
+          <li><b>Self-trade prevention:</b> if your order would hit your own resting order, matching stops and the rest of your order is cancelled.</li>
+        </ul>
+        <p class="muted">Click a price in the book to fill in the price field.</p>
+      </details>
+    </section>
+
+    <section class="panel" id="book">
+      <h2>Order book</h2>
+      <div class="ladder-head"><span>Price</span><span>Size</span><span>Orders</span></div>
+      <div id="asks" class="ladder"></div>
+      <div id="spread" class="spread"></div>
+      <div id="bids" class="ladder"></div>
+    </section>
+
+    <section class="panel" id="side">
+      <h2>Your open orders</h2>
+      <div id="mine" class="list"><p class="muted">None yet.</p></div>
+      <h2>Trades</h2>
+      <div id="tape" class="list"></div>
+    </section>
+  </main>
+
+  <p id="loading" class="loading">Loading engine…</p>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

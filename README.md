@@ -5,6 +5,7 @@ I'm trying to get more into understanding how markets work, and first I wanted t
 Written in C++20. Reading Harris, *Trading and Exchanges*, alongside.
 
 **Try it:** [Order Book Playground](https://shriyaabalaji.github.io/limit-order-book/), the same C++ engine compiled to WebAssembly so you can place orders and watch them match in the browser.
+And the [Perp Playground](https://shriyaabalaji.github.io/limit-order-book/perp.html): trade a perpetual future with 10x leverage and watch liquidations cascade.
 
 ## What's here so far
 
@@ -12,7 +13,13 @@ Written in C++20. Reading Harris, *Trading and Exchanges*, alongside.
   - flat array of price levels, indexed by price tick
   - each level is a FIFO queue (doubly linked list) of orders, so the oldest order at a price gets filled first
   - all order nodes are allocated up front in a pool, with a free list to hand them out and take them back
-- `tests/` - sanity tests for the book and the matching engine
+- `include/perp.hpp` - a perpetual futures layer on top of the book
+  - positions with weighted-average entry, realized / unrealized PnL, all in integer cents
+  - mark price = mid of best bid and ask
+  - initial margin 10% checked before an order enters the book (resting orders count)
+  - liquidation at 5% maintenance margin: the position is market-sold into the book, which can cascade
+  - funding against a spot index, bad debt tracked when a liquidation can't cover the loss
+- `tests/` - sanity tests for the book, the matching engine, and the perp layer
 - `web/` - the browser playground (`web/build.sh` compiles the engine with Emscripten)
 - `bench/` - insert benchmark comparing my book against `std::map` + `std::list` and a version of the design from WK Selph's "How to Build a Fast Limit Order Book"
 

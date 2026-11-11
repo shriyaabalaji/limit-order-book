@@ -29,3 +29,7 @@ target_link_libraries(bench_matching PRIVATE lob)
 enable_testing()
 add_test(NAME test_order_book COMMAND test_order_book)
 add_test(NAME test_matching COMMAND test_matching)
+
+add_executable(test_perp tests/test_perp.cpp)
+target_link_libraries(test_perp PRIVATE lob)
+add_test(NAME test_perp COMMAND test_perp)

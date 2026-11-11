@@ -132,3 +132,29 @@ details ul { padding-left: 18px; margin: 8px 0; }
 .tag { color: var(--mine); font-size: 11px; text-align: right; }
 
 .loading { text-align: center; color: var(--muted); }
+
+/* ---------------------------------------------------------------- perp page */
+.hint { margin: 2px 0 8px; }
+button.wide { width: 100%; margin-top: 8px; font-size: 13px; }
+h2.gap { margin-top: 22px; }
+.stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; font-size: 13px; }
+.stats div, .market-stats div { display: flex; flex-direction: column; min-width: 0; }
+.stats span, .market-stats span { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.stats b, .market-stats b { font-family: var(--mono); font-weight: 600; overflow-wrap: anywhere; }
+.stats .b { color: var(--buy); }
+.stats .s { color: var(--sell); }
+.up { color: var(--buy); }
+.down, .warn-text { color: var(--sell); }
+.health { height: 6px; background: var(--border); border-radius: 3px; margin-top: 12px; overflow: hidden; }
+.health-bar { height: 100%; width: 100%; background: var(--buy); transition: width .3s; }
+.health-bar.caution { background: var(--mine); }
+.health-bar.danger { background: var(--sell); }
+.market-stats {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px;
+  font-size: 13px; padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid var(--border);
+}
+.list.short { max-height: 160px; margin-bottom: 18px; }
+.liq { font-size: 13px; padding: 4px 0; border-bottom: 1px solid var(--border); }
+.liq:last-child { border-bottom: none; }
+.liq.you { background: linear-gradient(90deg, var(--sell-bg), transparent); }
+.liq-tag { color: #fff; background: var(--sell); border-radius: 3px; padding: 0 4px; font-size: 10px; font-weight: 700; }

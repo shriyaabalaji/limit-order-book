@@ -107,6 +107,8 @@ struct Trade {
     uint64_t maker_id;    // resting (passive) order
     int64_t  price_ticks; // always the resting order's price
     uint32_t qty;
+    Owner    taker_owner;
+    Owner    maker_owner;
     Side     taker_side;
 };
 
@@ -287,7 +289,7 @@ private:
             }
             uint32_t fill = std::min(remaining, maker.qty);
 
-            on_trade(Trade{taker_id, maker.order_id, price, fill, taker_side});
+            on_trade(Trade{taker_id, maker.order_id, price, fill, taker_owner, maker.owner, taker_side});
 
             maker.qty     -= fill;
             lvl.total_qty -= fill;

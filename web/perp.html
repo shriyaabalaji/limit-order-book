@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Perp Playground</title>
+  <meta name="description" content="Trade a perpetual future with leverage, margin, liquidations and funding, on a C++ order book compiled to WebAssembly.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Perp Playground</h1>
+      <p class="sub">A perpetual future on the same C++ order book: 10x leverage, liquidations, funding.
+        <a href="./">Spot book</a> · <a href="https://github.com/shriyaabalaji/limit-order-book">Source</a></p>
+    </div>
+    <div class="controls">
+      <label class="toggle"><input type="checkbox" id="sim"> Simulate market</label>
+      <button id="shockDown" class="ghost" title="Spot price drops 6%">Spot −6%</button>
+      <button id="shockUp" class="ghost" title="Spot price rises 6%">Spot +6%</button>
+      <button id="reset" class="ghost">Reset</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel" id="entry">
+      <h2>Place order</h2>
+      <div class="sides" role="radiogroup" aria-label="Side">
+        <button type="button" class="side buy active" data-side="0" aria-pressed="true">Long</button>
+        <button type="button" class="side sell" data-side="1" aria-pressed="false">Short</button>
+      </div>
+      <label>Limit price ($)
+        <input id="price" type="number" step="0.01" min="90" max="110" value="100.00">
+      </label>
+      <label>Contracts
+        <input id="qty" type="number" step="1" min="1" value="50">
+      </label>
+      <p id="maxHint" class="muted hint"></p>
+      <button id="place" class="primary buy">Place long</button>
+      <div class="quick">
+        <button id="hitAsk" class="ghost">Long at best ask</button>
+        <button id="hitBid" class="ghost">Short at best bid</button>
+      </div>
+      <button id="close" class="ghost wide">Close position at market</button>
+      <p id="result" class="result" aria-live="polite"></p>
+
+      <h2 class="gap">Your account</h2>
+      <div id="acct" class="stats"></div>
+      <div class="health" title="Equity vs maintenance margin">
+        <div id="healthBar" class="health-bar"></div>
+      </div>
+      <p id="healthText" class="muted hint"></p>
+
+      <details>
+        <summary>How this perp works</summary>
+        <ul>
+          <li><b>Mark price</b> = midpoint of the best bid and ask. It values every position.</li>
+          <li><b>Initial margin 10%:</b> to open, your equity must cover 10% of the position, counting your resting orders as if they filled (so max 10x).</li>
+          <li><b>Maintenance margin 5%:</b> if equity falls below 5% of the position, you're liquidated: your orders are cancelled and the whole position is market-sold into the book.</li>
+          <li><b>Cascades:</b> a liquidation can push the mark down far enough to liquidate the next trader.</li>
+          <li><b>Bad debt:</b> if the book is too thin and a position closes below zero equity, the winners were paid money the loser didn't have.</li>
+          <li><b>Funding:</b> every interval, longs pay shorts (mark − spot) per contract, capped at 0.5%. Shorts pay when the perp is below spot. It pulls the perp toward spot.</li>
+        </ul>
+        <p class="muted">Try: go ~9x long (about 880 contracts), then hit Spot −6%.</p>
+      </details>
+    </section>
+
+    <section class="panel" id="book">
+      <div id="marketStats" class="market-stats"></div>
+      <h2>Order book</h2>
+      <div class="ladder-head"><span>Price</span><span>Size</span><span>Orders</span></div>
+      <div id="asks" class="ladder"></div>
+      <div id="spread" class="spread"></div>
+      <div id="bids" class="ladder"></div>
+    </section>
+
+    <section class="panel" id="side">
+      <h2>Your open orders</h2>
+      <div id="mine" class="list short"><p class="muted">None yet.</p></div>
+      <h2>Liquidations <span id="badDebt" class="muted"></span></h2>
+      <div id="liqs" class="list short"><p class="muted">None yet.</p></div>
+      <h2>Trades</h2>
+      <div id="tape" class="list tape"></div>
+    </section>
+  </main>
+
+  <p id="loading" class="loading">Loading engine…</p>
+  <script type="module" src="perp.js"></script>
+</body>
+</html>
